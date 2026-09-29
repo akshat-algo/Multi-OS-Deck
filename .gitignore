@@ -46,3 +46,7 @@ app.*.map.json
 
 # Widget Preview related
 .widget_preview/
+
+# Local JDK installations
+**/oracleJdk*/
+ios/oracleJdk-27/

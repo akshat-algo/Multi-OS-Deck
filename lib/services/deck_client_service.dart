@@ -41,6 +41,9 @@ class DeckClientService extends ChangeNotifier {
   /// Connects to the Windows host WebSocket.
   Future<bool> connect(String ipOrHost, [int port = 8443]) async {
     _hostAddress = ipOrHost.trim().replaceAll('ws://', '').replaceAll('http://', '');
+    if (_hostAddress.endsWith('.') || _hostAddress.isEmpty || _hostAddress == '192.168.1.') {
+      _hostAddress = (!kIsWeb && (Platform.isAndroid || Platform.isIOS)) ? '192.168.1.114' : '127.0.0.1';
+    }
     if (_hostAddress.contains(':')) {
       final parts = _hostAddress.split(':');
       _hostAddress = parts[0];
@@ -50,16 +53,29 @@ class DeckClientService extends ChangeNotifier {
     }
 
     _autoReconnect = true;
+    _reconnectTimer?.cancel();
+    _reconnectTimer = null;
+
+    // Safely close previous channel to avoid conflicting listener race conditions
+    if (_channel != null) {
+      try {
+        _channel?.sink.close();
+      } catch (_) {}
+      _channel = null;
+    }
+
     _setStatus(ConnectionStatus.connecting);
 
     try {
       final uri = Uri.parse('ws://$_hostAddress:$_port');
       _channel = WebSocketChannel.connect(uri);
 
-      // Wait for handshake response or ready
-      await _channel!.ready;
+      // Wait for handshake response or ready with timeout
+      await _channel!.ready.timeout(const Duration(seconds: 3));
 
       _setStatus(ConnectionStatus.connected);
+      _reconnectTimer?.cancel();
+      _reconnectTimer = null;
       _startPing();
 
       // Send initial Handshake
@@ -176,7 +192,7 @@ class DeckClientService extends ChangeNotifier {
 
   void _startPing() {
     _pingTimer?.cancel();
-    _pingTimer = Timer.periodic(const Duration(seconds: 3), (_) {
+    _pingTimer = Timer.periodic(const Duration(seconds: 2), (_) {
       if (isConnected) {
         final now = DateTime.now().millisecondsSinceEpoch;
         sendPacket(DeckPacket.ping(now));
@@ -189,6 +205,51 @@ class DeckClientService extends ChangeNotifier {
       _status = s;
       notifyListeners();
     }
+  }
+
+  /// Automatically scans and connects to the PC over Wi-Fi with zero typing.
+  Future<bool> autoDiscoverAndConnect() async {
+    // 1. Try saved/known Wi-Fi host first
+    if (_hostAddress.isNotEmpty && _hostAddress != '127.0.0.1') {
+      if (await connect(_hostAddress, _port)) return true;
+    }
+
+    // 2. Try the primary laptop Wi-Fi IP
+    if (await connect('192.168.1.114', 8443)) return true;
+
+    // 3. UDP broadcast ping on port 8443
+    try {
+      final udp = await RawDatagramSocket.bind(InternetAddress.anyIPv4, 0);
+      udp.broadcastEnabled = true;
+      udp.send('DISCOVER_DECK'.codeUnits, InternetAddress('255.255.255.255'), 8443);
+
+      final completer = Completer<String?>();
+      final sub = udp.listen((event) {
+        if (event == RawSocketEvent.read) {
+          final dg = udp.receive();
+          if (dg != null) {
+            final reply = String.fromCharCodes(dg.data);
+            if (reply.contains('STREAM_DECK_HOST')) {
+              if (!completer.isCompleted) completer.complete(dg.address.address);
+            }
+          }
+        }
+      });
+
+      final discoveredIp = await completer.future.timeout(
+        const Duration(milliseconds: 800),
+        onTimeout: () => null,
+      );
+      sub.cancel();
+      udp.close();
+
+      if (discoveredIp != null) {
+        if (await connect(discoveredIp, 8443)) return true;
+      }
+    } catch (_) {}
+
+    // 4. Fallback to USB cable reverse proxy (127.0.0.1)
+    return await connect('127.0.0.1', 8443);
   }
 
   @override

@@ -55,12 +55,14 @@ class _RootScreenState extends State<RootScreen> {
     super.initState();
     _showHostMode = !kIsWeb && Platform.isWindows;
 
-    // On mobile, auto-connect to last used IP if available
-    WidgetsBinding.instance.addPostFrameCallback((_) {
+    // On mobile, automatically discover and connect to PC over Wi-Fi
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
       if (!_showHostMode) {
         final storage = context.read<DeckStorageService>();
-        if (storage.lastConnectedIp.isNotEmpty) {
-          context.read<DeckClientService>().connect(storage.lastConnectedIp);
+        final client = context.read<DeckClientService>();
+        final connected = await client.autoDiscoverAndConnect();
+        if (connected && client.hostAddress.isNotEmpty) {
+          await storage.saveLastConnectedIp(client.hostAddress);
         }
       }
     });

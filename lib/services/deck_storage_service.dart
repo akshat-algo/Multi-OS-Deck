@@ -28,7 +28,10 @@ class DeckStorageService extends ChangeNotifier {
 
     // Load recent IPs
     _recentIps = prefs.getStringList(_keyRecentIps) ?? [];
-    _lastConnectedIp = prefs.getString(_keyLastConnectedIp) ?? '';
+    _lastConnectedIp = prefs.getString(_keyLastConnectedIp) ?? '127.0.0.1';
+    if (_lastConnectedIp.endsWith('.') || _lastConnectedIp.isEmpty || _lastConnectedIp == '192.168.1.') {
+      _lastConnectedIp = '127.0.0.1';
+    }
 
     // Load Profiles
     final rawProfiles = prefs.getString(_keyProfiles);

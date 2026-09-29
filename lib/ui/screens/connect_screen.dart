@@ -23,9 +23,9 @@ class _ConnectScreenState extends State<ConnectScreen> {
   void initState() {
     super.initState();
     final storage = context.read<DeckStorageService>();
-    final lastIp = storage.lastConnectedIp.isNotEmpty
+    final lastIp = (storage.lastConnectedIp.isNotEmpty && storage.lastConnectedIp != '127.0.0.1')
         ? storage.lastConnectedIp
-        : '192.168.1.';
+        : '192.168.1.114';
 
     _ipController = TextEditingController(text: lastIp);
     _portController = TextEditingController(text: '8443');
@@ -36,6 +36,35 @@ class _ConnectScreenState extends State<ConnectScreen> {
     _ipController.dispose();
     _portController.dispose();
     super.dispose();
+  }
+
+  Future<void> _handleAutoDiscover() async {
+    setState(() {
+      _isAttempting = true;
+      _errorMessage = null;
+    });
+
+    final client = context.read<DeckClientService>();
+    final storage = context.read<DeckStorageService>();
+
+    final success = await client.autoDiscoverAndConnect();
+    if (!mounted) return;
+    setState(() => _isAttempting = false);
+
+    if (success) {
+      if (client.hostAddress.isNotEmpty) {
+        _ipController.text = client.hostAddress;
+        await storage.saveLastConnectedIp(client.hostAddress);
+      }
+      if (Navigator.of(context).canPop()) {
+        Navigator.of(context).pop();
+      }
+    } else {
+      setState(() {
+        _errorMessage =
+            'Could not auto-discover PC on local Wi-Fi.\nMake sure Companion Server is started on PC and phone is on the same Wi-Fi.';
+      });
+    }
   }
 
   Future<void> _handleConnect(String ip) async {
@@ -190,25 +219,28 @@ class _ConnectScreenState extends State<ConnectScreen> {
               // Quick Presets
               Wrap(
                 spacing: 8,
+                runSpacing: 8,
                 children: [
                   ActionChip(
-                    avatar: const Icon(Icons.android_rounded, size: 14, color: DeckTheme.green),
-                    label: const Text('10.0.2.2 (Emulator)', style: TextStyle(fontSize: 11, color: DeckTheme.green)),
-                    backgroundColor: DeckTheme.card,
-                    side: const BorderSide(color: DeckTheme.border),
-                    onPressed: () {
-                      _ipController.text = '10.0.2.2';
-                      setState(() {});
-                    },
-                  ),
-                  ActionChip(
-                    avatar: const Icon(Icons.computer_rounded, size: 14, color: DeckTheme.cyan),
-                    label: const Text('127.0.0.1 (Localhost)', style: TextStyle(fontSize: 11, color: DeckTheme.cyan)),
+                    avatar: const Icon(Icons.usb_rounded, size: 14, color: DeckTheme.cyan),
+                    label: const Text('127.0.0.1 (USB Cable)', style: TextStyle(fontSize: 11, color: DeckTheme.cyan)),
                     backgroundColor: DeckTheme.card,
                     side: const BorderSide(color: DeckTheme.border),
                     onPressed: () {
                       _ipController.text = '127.0.0.1';
                       setState(() {});
+                      _handleConnect('127.0.0.1');
+                    },
+                  ),
+                  ActionChip(
+                    avatar: const Icon(Icons.wifi_rounded, size: 14, color: DeckTheme.green),
+                    label: const Text('192.168.1.114 (PC Wi-Fi)', style: TextStyle(fontSize: 11, color: DeckTheme.green)),
+                    backgroundColor: DeckTheme.card,
+                    side: const BorderSide(color: DeckTheme.border),
+                    onPressed: () {
+                      _ipController.text = '192.168.1.114';
+                      setState(() {});
+                      _handleConnect('192.168.1.114');
                     },
                   ),
                 ],
@@ -237,6 +269,25 @@ class _ConnectScreenState extends State<ConnectScreen> {
                     ],
                   ),
                 ),
+
+              // Auto-Discover Wi-Fi Button
+              SizedBox(
+                height: 48,
+                child: ElevatedButton.icon(
+                  onPressed: _isAttempting ? null : _handleAutoDiscover,
+                  icon: const Icon(Icons.wifi_find_rounded),
+                  label: const Text(
+                    'AUTO-DISCOVER PC (WI-FI)',
+                    style: TextStyle(fontWeight: FontWeight.bold, letterSpacing: 0.4),
+                  ),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: DeckTheme.green,
+                    foregroundColor: Colors.black,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 12),
 
               // Connect Button
               SizedBox(

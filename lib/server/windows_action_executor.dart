@@ -5,6 +5,15 @@ import '../models/deck_action.dart';
 typedef _KeybdEventC = Void Function(Uint8 bVk, Uint8 bScan, Uint32 dwFlags, IntPtr dwExtraInfo);
 typedef _KeybdEventDart = void Function(int bVk, int bScan, int dwFlags, int dwExtraInfo);
 
+typedef _MapVirtualKeyC = Uint32 Function(Uint32 uCode, Uint32 uMapType);
+typedef _MapVirtualKeyDart = int Function(int uCode, int uMapType);
+
+typedef _SendMessageWC = IntPtr Function(IntPtr hWnd, Uint32 msg, IntPtr wParam, IntPtr lParam);
+typedef _SendMessageWDart = int Function(int hWnd, int msg, int wParam, int lParam);
+
+typedef _SendNotifyMessageWC = Int32 Function(IntPtr hWnd, Uint32 msg, IntPtr wParam, IntPtr lParam);
+typedef _SendNotifyMessageWDart = int Function(int hWnd, int msg, int wParam, int lParam);
+
 typedef _LockWorkStationC = Int32 Function();
 typedef _LockWorkStationDart = int Function();
 
@@ -13,7 +22,10 @@ typedef _LockWorkStationDart = int Function();
 class WindowsActionExecutor {
   static DynamicLibrary? _user32;
   static _KeybdEventDart? _keybdEvent;
+  static _MapVirtualKeyDart? _mapVirtualKey;
   static _LockWorkStationDart? _lockWorkStation;
+  static _SendMessageWDart? _sendMessageW;
+  static _SendNotifyMessageWDart? _sendNotifyMessageW;
   static bool _initialized = false;
 
   static const int _keyeventfKeydown = 0x0000;
@@ -28,7 +40,10 @@ class WindowsActionExecutor {
       try {
         _user32 = DynamicLibrary.open('user32.dll');
         _keybdEvent = _user32!.lookupFunction<_KeybdEventC, _KeybdEventDart>('keybd_event');
+        _mapVirtualKey = _user32!.lookupFunction<_MapVirtualKeyC, _MapVirtualKeyDart>('MapVirtualKeyA');
         _lockWorkStation = _user32!.lookupFunction<_LockWorkStationC, _LockWorkStationDart>('LockWorkStation');
+        _sendMessageW = _user32!.lookupFunction<_SendMessageWC, _SendMessageWDart>('SendMessageW');
+        _sendNotifyMessageW = _user32!.lookupFunction<_SendNotifyMessageWC, _SendNotifyMessageWDart>('SendNotifyMessageW');
       } catch (e) {
         // Fallback gracefully if FFI fails
       }
@@ -46,19 +61,19 @@ class WindowsActionExecutor {
     try {
       switch (action.type) {
         case DeckActionType.media:
-          return _executeMedia(action.command);
+          return await _executeMedia(action.command);
 
         case DeckActionType.hotkey:
-          return _executeHotkey(action.command);
+          return await _executeHotkey(action.command);
 
         case DeckActionType.window:
-          return _executeWindowCommand(action.command);
+          return await _executeWindowCommand(action.command);
 
         case DeckActionType.browser:
-          return _executeBrowserCommand(action.command);
+          return await _executeBrowserCommand(action.command);
 
         case DeckActionType.streamDeckKey:
-          return _executeStreamDeckKey(action.command);
+          return await _executeStreamDeckKey(action.command);
 
         case DeckActionType.obs:
           return await _executeObs(action.command, action.params);
@@ -95,121 +110,178 @@ class WindowsActionExecutor {
 
   // --- NATIVE KEYSTROKE SIMULATION (NO NUMLOCK ISSUE) ---
 
-  /// Controls Windows Master Volume and Media Playback via direct VK codes.
-  static bool _executeMedia(String cmd) {
-    int vk;
-    switch (cmd.toLowerCase().trim()) {
+  /// Controls Windows Master Volume and Media Playback via dual WM_APPCOMMAND and direct VK codes.
+  /// Controls Windows Master Volume, Media Playback, and YouTube Player Controls.
+  static Future<bool> _executeMedia(String cmd) async {
+    final lower = cmd.toLowerCase().trim();
+
+    // Dedicated YouTube In-Browser Shortcuts (does not affect master OS volume)
+    if (lower == 'youtube_play' || lower == 'yt_play' || lower == 'youtube_play_pause' || lower == 'yt_play_pause') {
+      return await _executeHotkey('k');
+    }
+    if (lower == 'youtube_mute' || lower == 'yt_mute') {
+      return await _executeHotkey('m');
+    }
+    if (lower == 'youtube_seek_fwd' || lower == 'yt_seek_fwd' || lower == 'seek_fwd') {
+      return await _executeHotkey('l');
+    }
+    if (lower == 'youtube_seek_back' || lower == 'yt_seek_back' || lower == 'seek_back') {
+      return await _executeHotkey('j');
+    }
+    if (lower == 'youtube_vol_up' || lower == 'yt_vol_up') {
+      return await _executeHotkey('up');
+    }
+    if (lower == 'youtube_vol_down' || lower == 'yt_vol_down') {
+      return await _executeHotkey('down');
+    }
+    if (lower == 'youtube_fullscreen' || lower == 'yt_fullscreen') {
+      return await _executeHotkey('f');
+    }
+    if (lower == 'youtube_theater' || lower == 'yt_theater') {
+      return await _executeHotkey('t');
+    }
+    if (lower == 'youtube_next' || lower == 'yt_next') {
+      return await _executeHotkey('shift+n');
+    }
+
+    int vk = 0;
+    int appCmd = 0;
+    switch (lower) {
       case 'volume_up':
       case 'volup':
       case 'vol_up':
         vk = 0xAF; // VK_VOLUME_UP
+        appCmd = 10; // APPCOMMAND_VOLUME_UP
         break;
       case 'volume_down':
       case 'voldown':
       case 'vol_down':
         vk = 0xAE; // VK_VOLUME_DOWN
+        appCmd = 9; // APPCOMMAND_VOLUME_DOWN
         break;
       case 'volume_mute':
       case 'mute':
       case 'vol_mute':
         vk = 0xAD; // VK_VOLUME_MUTE
+        appCmd = 8; // APPCOMMAND_VOLUME_MUTE
         break;
       case 'play':
       case 'pause':
       case 'play_pause':
         vk = 0xB3; // VK_MEDIA_PLAY_PAUSE
+        appCmd = 14; // APPCOMMAND_MEDIA_PLAY_PAUSE
         break;
       case 'next':
       case 'next_track':
         vk = 0xB0; // VK_MEDIA_NEXT_TRACK
+        appCmd = 11; // APPCOMMAND_MEDIA_NEXTTRACK
         break;
       case 'prev':
       case 'prev_track':
         vk = 0xB1; // VK_MEDIA_PREV_TRACK
+        appCmd = 12; // APPCOMMAND_MEDIA_PREVIOUSTRACK
         break;
       case 'stop':
         vk = 0xB2; // VK_MEDIA_STOP
+        appCmd = 13; // APPCOMMAND_MEDIA_STOP
+        break;
+      case 'mic_mute':
+      case 'mic_toggle':
+        appCmd = 44; // APPCOMMAND_MIC_ON_OFF_TOGGLE
         break;
       default:
         return false;
     }
 
-    _sendSingleKey(vk, isExtended: true);
+    // 1. Synthesize virtual key FIRST! This directly changes Windows Master Volume / hardware Mute / Play-Pause
+    if (vk > 0) {
+      await _sendSingleKey(vk, isExtended: true);
+    }
+
+    // 2. Also broadcast WM_APPCOMMAND to all windows as a complementary broadcast
+    if (appCmd > 0) {
+      if (_sendNotifyMessageW != null) {
+        _sendNotifyMessageW!(0xFFFF, 0x0319, 0, appCmd << 16);
+      } else if (_sendMessageW != null) {
+        _sendMessageW!(0xFFFF, 0x0319, 0, appCmd << 16);
+      }
+    }
+
     return true;
   }
 
   /// Executes window management actions directly.
-  static bool _executeWindowCommand(String cmd) {
+  static Future<bool> _executeWindowCommand(String cmd) async {
     switch (cmd.toLowerCase().trim()) {
       case 'show_desktop':
       case 'desktop':
-        return _executeHotkey('win+d');
+        return await _executeHotkey('win+d');
       case 'minimize':
       case 'minimize_window':
-        return _executeHotkey('win+down');
+        return await _executeHotkey('win+down');
       case 'maximize':
       case 'maximize_window':
-        return _executeHotkey('win+up');
+        return await _executeHotkey('win+up');
       case 'snap_left':
-        return _executeHotkey('win+left');
+        return await _executeHotkey('win+left');
       case 'snap_right':
-        return _executeHotkey('win+right');
+        return await _executeHotkey('win+right');
       case 'close_window':
       case 'close_app':
-        return _executeHotkey('alt+f4');
+        return await _executeHotkey('alt+f4');
       case 'switch_window':
       case 'alt_tab':
-        return _executeHotkey('alt+tab');
+        return await _executeHotkey('alt+tab');
       case 'next_desktop':
-        return _executeHotkey('ctrl+win+right');
+        return await _executeHotkey('ctrl+win+right');
       case 'prev_desktop':
-        return _executeHotkey('ctrl+win+left');
+        return await _executeHotkey('ctrl+win+left');
       default:
         return false;
     }
   }
 
   /// Executes browser shortcuts directly.
-  static bool _executeBrowserCommand(String cmd) {
+  static Future<bool> _executeBrowserCommand(String cmd) async {
     switch (cmd.toLowerCase().trim()) {
       case 'new_tab':
-        return _executeHotkey('ctrl+t');
+        return await _executeHotkey('ctrl+t');
       case 'close_tab':
-        return _executeHotkey('ctrl+w');
+        return await _executeHotkey('ctrl+w');
       case 'reopen_tab':
-        return _executeHotkey('ctrl+shift+t');
+        return await _executeHotkey('ctrl+shift+t');
       case 'refresh':
-        return _executeHotkey('f5');
+        return await _executeHotkey('f5');
       case 'hard_refresh':
-        return _executeHotkey('ctrl+f5');
+        return await _executeHotkey('ctrl+f5');
       case 'devtools':
       case 'inspect':
-        return _executeHotkey('f12');
+        return await _executeHotkey('f12');
       case 'next_tab':
-        return _executeHotkey('ctrl+tab');
+        return await _executeHotkey('ctrl+tab');
       case 'prev_tab':
-        return _executeHotkey('ctrl+shift+tab');
+        return await _executeHotkey('ctrl+shift+tab');
       case 'bookmark':
-        return _executeHotkey('ctrl+d');
+        return await _executeHotkey('ctrl+d');
       default:
         return false;
     }
   }
 
   /// Sends Stream Deck dedicated virtual keys F13–F24 (0x7C–0x87).
-  static bool _executeStreamDeckKey(String fKey) {
+  static Future<bool> _executeStreamDeckKey(String fKey) async {
     final clean = fKey.toLowerCase().replaceAll('f', '').trim();
     final num = int.tryParse(clean);
     if (num != null && num >= 13 && num <= 24) {
       final vk = 0x7C + (num - 13);
-      _sendSingleKey(vk);
+      await _sendSingleKey(vk);
       return true;
     }
     return false;
   }
 
   /// Simulates clean, precise keystroke combinations on Windows without NumLock interference.
-  static bool _executeHotkey(String keys) {
+  static Future<bool> _executeHotkey(String keys) async {
     final lower = keys.trim().toLowerCase();
 
     // Dedicated Windows lock
@@ -219,6 +291,16 @@ class WindowsActionExecutor {
         return true;
       }
       Process.run('rundll32.exe', ['user32.dll,LockWorkStation']);
+      return true;
+    }
+
+    // Dedicated Snipping Tool & Screenshot
+    if (lower == 'snip' || lower == 'win+shift+s' || lower == 'screenshot') {
+      try {
+        Process.run('cmd', ['/c', 'start', '', 'ms-screenclip:']);
+      } catch (_) {}
+      // Also send Win+Shift+S key combo natively
+      await _sendSingleKey(0x2C, isExtended: true); // PrintScreen
       return true;
     }
 
@@ -253,20 +335,28 @@ class WindowsActionExecutor {
       // 1. Press all modifiers down
       for (final mod in modifiersDown) {
         final ext = (mod == 0x5B) ? _keyeventfExtendedkey : 0;
-        _keybdEvent!(mod, 0, _keyeventfKeydown | ext, 0);
+        final scan = _mapVirtualKey != null ? _mapVirtualKey!(mod, 0) : 0;
+        _keybdEvent!(mod, scan, _keyeventfKeydown | ext, 0);
       }
+
+      await Future.delayed(const Duration(milliseconds: 15));
 
       // 2. Press main key down and up
       if (mainKey != null) {
         final ext = isMainExtended ? _keyeventfExtendedkey : 0;
-        _keybdEvent!(mainKey, 0, _keyeventfKeydown | ext, 0);
-        _keybdEvent!(mainKey, 0, _keyeventfKeyup | ext, 0);
+        final scan = _mapVirtualKey != null ? _mapVirtualKey!(mainKey, 0) : 0;
+        _keybdEvent!(mainKey, scan, _keyeventfKeydown | ext, 0);
+        await Future.delayed(const Duration(milliseconds: 25));
+        _keybdEvent!(mainKey, scan, _keyeventfKeyup | ext, 0);
       }
+
+      await Future.delayed(const Duration(milliseconds: 15));
 
       // 3. Release all modifiers in reverse order
       for (final mod in modifiersDown.reversed) {
         final ext = (mod == 0x5B) ? _keyeventfExtendedkey : 0;
-        _keybdEvent!(mod, 0, _keyeventfKeyup | ext, 0);
+        final scan = _mapVirtualKey != null ? _mapVirtualKey!(mod, 0) : 0;
+        _keybdEvent!(mod, scan, _keyeventfKeyup | ext, 0);
       }
 
       return true;
@@ -275,11 +365,13 @@ class WindowsActionExecutor {
     return false;
   }
 
-  static void _sendSingleKey(int vk, {bool isExtended = false}) {
+  static Future<void> _sendSingleKey(int vk, {bool isExtended = false}) async {
     if (_keybdEvent != null) {
       final ext = isExtended ? _keyeventfExtendedkey : 0;
-      _keybdEvent!(vk, 0, _keyeventfKeydown | ext, 0);
-      _keybdEvent!(vk, 0, _keyeventfKeyup | ext, 0);
+      final scan = _mapVirtualKey != null ? _mapVirtualKey!(vk, 0) : 0;
+      _keybdEvent!(vk, scan, _keyeventfKeydown | ext, 0);
+      await Future.delayed(const Duration(milliseconds: 25));
+      _keybdEvent!(vk, scan, _keyeventfKeyup | ext, 0);
     }
   }
 
@@ -473,6 +565,27 @@ class WindowsActionExecutor {
   static Future<bool> _launchApp(String appNameOrPath, [List<String>? args]) async {
     final clean = appNameOrPath.toLowerCase().trim();
 
+    // 0. UWP / Built-in Windows Tools (instant foreground launch)
+    if (clean == 'calc' || clean == 'calculator') {
+      final res = await Process.run('cmd', ['/c', 'start', '', 'calc:']);
+      return res.exitCode == 0;
+    }
+
+    if (clean == 'taskmgr' || clean == 'taskmgr.exe' || clean == 'task manager') {
+      final res = await Process.run('cmd', ['/c', 'start', '', 'taskmgr']);
+      return res.exitCode == 0;
+    }
+
+    if (clean == 'notepad' || clean == 'notepad.exe') {
+      final res = await Process.run('cmd', ['/c', 'start', '', 'notepad']);
+      return res.exitCode == 0;
+    }
+
+    if (clean == 'powershell' || clean == 'terminal' || clean == 'wt') {
+      final res = await Process.run('cmd', ['/c', 'start', '', 'powershell']);
+      return res.exitCode == 0;
+    }
+
     // 1. Check OBS Studio
     if (clean.contains('obs')) {
       final obsPath = findObsPath();
@@ -486,6 +599,8 @@ class WindowsActionExecutor {
         );
         return true;
       }
+      final res = await Process.run('cmd', ['/c', 'start', '', 'obs']);
+      if (res.exitCode == 0) return true;
     }
 
     // 2. Check Discord
@@ -502,6 +617,8 @@ class WindowsActionExecutor {
           return true;
         }
       }
+      final res = await Process.run('cmd', ['/c', 'start', '', 'discord:']);
+      if (res.exitCode == 0) return true;
     }
 
     // 3. Check Google Chrome
@@ -518,6 +635,8 @@ class WindowsActionExecutor {
           return true;
         }
       }
+      final res = await Process.run('cmd', ['/c', 'start', '', 'chrome']);
+      if (res.exitCode == 0) return true;
     }
 
     // 4. Check Spotify
@@ -531,8 +650,8 @@ class WindowsActionExecutor {
         }
       }
       // Fallback to Spotify URI protocol
-      await Process.run('cmd', ['/c', 'start', 'spotify:']);
-      return true;
+      final res = await Process.run('cmd', ['/c', 'start', '', 'spotify:']);
+      return res.exitCode == 0;
     }
 
     // 5. Check VS Code
@@ -548,21 +667,13 @@ class WindowsActionExecutor {
           return true;
         }
       }
+      final res = await Process.run('cmd', ['/c', 'start', '', 'code']);
+      if (res.exitCode == 0) return true;
     }
 
-    // 6. Generic App / Windows System Tool (calc, taskmgr, notepad, wt, powershell, etc.)
-    try {
-      await Process.start(
-        appNameOrPath,
-        args ?? [],
-        runInShell: true,
-        mode: ProcessStartMode.detached,
-      );
-      return true;
-    } catch (_) {
-      final res = await Process.run('cmd', ['/c', 'start', '', appNameOrPath]);
-      return res.exitCode == 0;
-    }
+    // 6. Generic App / Windows System Tool
+    final res = await Process.run('cmd', ['/c', 'start', '', appNameOrPath]);
+    return res.exitCode == 0;
   }
 
   /// Opens a URL in the user's default browser.

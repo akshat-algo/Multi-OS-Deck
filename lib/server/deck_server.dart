@@ -43,6 +43,7 @@ class DeckServer {
 
   final _eventsController = StreamController<ServerEvent>.broadcast();
   final _clientsController = StreamController<List<ConnectedClient>>.broadcast();
+  RawDatagramSocket? _udpSocket;
 
   Stream<ServerEvent> get eventsStream => _eventsController.stream;
   Stream<List<ConnectedClient>> get clientsStream => _clientsController.stream;
@@ -58,6 +59,27 @@ class DeckServer {
     try {
       _httpServer = await HttpServer.bind(InternetAddress.anyIPv4, port);
       _log('Server Started', 'Listening on port $port');
+
+      // Start UDP auto-discovery broadcast responder
+      try {
+        _udpSocket = await RawDatagramSocket.bind(InternetAddress.anyIPv4, port);
+        _udpSocket?.broadcastEnabled = true;
+        _udpSocket?.listen((RawSocketEvent event) {
+          if (event == RawSocketEvent.read) {
+            final dg = _udpSocket?.receive();
+            if (dg != null) {
+              final msg = String.fromCharCodes(dg.data);
+              if (msg.contains('DISCOVER_DECK')) {
+                _udpSocket?.send(
+                  'STREAM_DECK_HOST:$port'.codeUnits,
+                  dg.address,
+                  dg.port,
+                );
+              }
+            }
+          }
+        });
+      } catch (_) {}
 
       // Start telemetry polling and broadcast
       _telemetryService.start(const Duration(seconds: 2));
@@ -81,6 +103,8 @@ class DeckServer {
   Future<void> stop() async {
     _telemetrySub?.cancel();
     _telemetryService.stop();
+    _udpSocket?.close();
+    _udpSocket = null;
 
     for (var client in _clients) {
       try {
@@ -105,16 +129,31 @@ class DeckServer {
           ..write('WebSocket upgrade failed: $err')
           ..close();
       });
+    } else if (request.uri.path == '/apk' || request.uri.path == '/download') {
+      final apkFile = File(r'c:\extra\android_dec\build\app\outputs\flutter-apk\app-debug.apk');
+      if (apkFile.existsSync()) {
+        request.response.headers.contentType = ContentType('application', 'vnd.android.package-archive');
+        request.response.headers.add('Content-Disposition', 'attachment; filename="stream_deck.apk"');
+        apkFile.openRead().pipe(request.response);
+      } else {
+        request.response
+          ..statusCode = HttpStatus.notFound
+          ..write('APK build not found')
+          ..close();
+      }
     } else {
       // Basic HTTP status check endpoint
       request.response
         ..headers.contentType = ContentType.json
-        ..write('{"status":"online","app":"StreamDeckHost","port":$port}')
+        ..write('{"status":"online","app":"StreamDeckHost","port":$port,"downloadUrl":"/apk"}')
         ..close();
     }
   }
 
   void _handleClientConnection(WebSocket socket, String ip) {
+    // Keep TCP socket alive and prevent mobile Wi-Fi timeouts
+    socket.pingInterval = const Duration(seconds: 5);
+
     final clientId = DateTime.now().microsecondsSinceEpoch.toString();
     final client = ConnectedClient(id: clientId, socket: socket);
     _clients.add(client);
@@ -161,7 +200,9 @@ class DeckServer {
           // Execute action on Windows
           WindowsActionExecutor.execute(action).then((success) {
             if (!success) {
-              _log('Action Failed', 'Failed to execute ${action.type.name} on Windows', isError: true);
+              _log('Action Failed', 'Failed to execute ${action.type.name} [${action.command}] on Windows', isError: true);
+            } else {
+              _log('Action Executed', 'Successfully executed ${action.type.name} [${action.command}]');
             }
           });
         }

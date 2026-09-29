@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'package:stream_deck/server/deck_server.dart';
 
@@ -35,10 +36,23 @@ void main(List<String> args) async {
     }
   });
 
-  // Keep process alive
+  // Keep process alive indefinitely until explicitly killed or interrupted
+  final keepAlive = Completer<void>();
+
   ProcessSignal.sigint.watch().listen((_) async {
     print('\nShutting down server...');
     await server.stop();
+    if (!keepAlive.isCompleted) keepAlive.complete();
     exit(0);
   });
+
+  if (!Platform.isWindows) {
+    ProcessSignal.sigterm.watch().listen((_) async {
+      await server.stop();
+      if (!keepAlive.isCompleted) keepAlive.complete();
+      exit(0);
+    });
+  }
+
+  await keepAlive.future;
 }
