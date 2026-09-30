@@ -153,49 +153,57 @@ class _DeckScreenState extends State<DeckScreen> {
       ),
       child: Row(
         children: [
-          // Profile Switcher Pill
-          InkWell(
-            onTap: () => _showProfilePicker(context, storage),
-            borderRadius: BorderRadius.circular(10),
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-              decoration: BoxDecoration(
-                color: DeckTheme.card,
-                borderRadius: BorderRadius.circular(10),
-                border: Border.all(color: DeckTheme.border),
-              ),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(
-                    profile.name,
-                    style: const TextStyle(
-                      color: DeckTheme.textPrimary,
-                      fontSize: 13,
-                      fontWeight: FontWeight.w700,
+          // Profile Switcher Pill (Flexible with Ellipsis to prevent header overflow)
+          Flexible(
+            child: InkWell(
+              onTap: () => _showProfilePicker(context, storage),
+              borderRadius: BorderRadius.circular(10),
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                decoration: BoxDecoration(
+                  color: DeckTheme.card,
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: DeckTheme.border),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Flexible(
+                      child: Text(
+                        profile.name,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          color: DeckTheme.textPrimary,
+                          fontSize: 13,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
                     ),
-                  ),
-                  const SizedBox(width: 4),
-                  const Icon(
-                    Icons.unfold_more_rounded,
-                    size: 16,
-                    color: DeckTheme.textSecondary,
-                  ),
-                ],
+                    const SizedBox(width: 4),
+                    const Icon(
+                      Icons.unfold_more_rounded,
+                      size: 16,
+                      color: DeckTheme.textSecondary,
+                    ),
+                  ],
+                ),
               ),
             ),
           ),
 
-          const Spacer(),
+          const SizedBox(width: 6),
 
           // Live / Edit Mode Pill Toggle
           IconButton(
             tooltip: _isEditMode ? 'Lock Deck (Live Mode)' : 'Edit Mode',
             visualDensity: VisualDensity.compact,
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
             icon: Icon(
               _isEditMode ? Icons.edit_rounded : Icons.lock_outline_rounded,
               color: _isEditMode ? DeckTheme.cyan : DeckTheme.textSecondary,
-              size: 20,
+              size: 19,
             ),
             onPressed: () {
               setState(() => _isEditMode = !_isEditMode);
@@ -213,7 +221,9 @@ class _DeckScreenState extends State<DeckScreen> {
           // Grid Layout Size Toggle
           PopupMenuButton<String>(
             tooltip: 'Grid Dimensions',
-            icon: const Icon(Icons.grid_view_rounded, size: 20, color: DeckTheme.textSecondary),
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+            icon: const Icon(Icons.grid_view_rounded, size: 19, color: DeckTheme.textSecondary),
             color: DeckTheme.surface,
             onSelected: (val) {
               setState(() {
@@ -251,7 +261,7 @@ class _DeckScreenState extends State<DeckScreen> {
             },
             borderRadius: BorderRadius.circular(16),
             child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
               decoration: BoxDecoration(
                 color: client.isConnected
                     ? DeckTheme.green.withValues(alpha: 0.12)
@@ -274,7 +284,7 @@ class _DeckScreenState extends State<DeckScreen> {
                       color: client.isConnected ? DeckTheme.green : DeckTheme.red,
                     ),
                   ),
-                  const SizedBox(width: 6),
+                  const SizedBox(width: 5),
                   Text(
                     client.isConnected ? '${client.latencyMs}ms' : 'PAIR',
                     style: TextStyle(
@@ -378,6 +388,8 @@ class _DeckScreenState extends State<DeckScreen> {
                     ),
                     title: Text(
                       p.name,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
                       style: TextStyle(
                         fontWeight: isSelected ? FontWeight.bold : FontWeight.w500,
                         color: isSelected ? DeckTheme.textPrimary : DeckTheme.textSecondary,

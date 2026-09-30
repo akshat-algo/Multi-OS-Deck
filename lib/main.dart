@@ -46,13 +46,14 @@ class RootScreen extends StatefulWidget {
   State<RootScreen> createState() => _RootScreenState();
 }
 
-class _RootScreenState extends State<RootScreen> {
+class _RootScreenState extends State<RootScreen> with WidgetsBindingObserver {
   // If on Windows Desktop, default to Host Server mode; on Mobile, default to Deck Client
   late bool _showHostMode;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _showHostMode = !kIsWeb && Platform.isWindows;
 
     // On mobile, automatically discover and connect to PC over Wi-Fi
@@ -60,12 +61,31 @@ class _RootScreenState extends State<RootScreen> {
       if (!_showHostMode) {
         final storage = context.read<DeckStorageService>();
         final client = context.read<DeckClientService>();
-        final connected = await client.autoDiscoverAndConnect();
+        client.setTargetHostName(storage.targetHostName);
+        final connected = await client.autoDiscoverAndConnect(
+          targetHostName: storage.targetHostName.isNotEmpty ? storage.targetHostName : null,
+        );
         if (connected && client.hostAddress.isNotEmpty) {
           await storage.saveLastConnectedIp(client.hostAddress);
         }
       }
     });
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    super.didChangeAppLifecycleState(state);
+    if (state == AppLifecycleState.resumed && !_showHostMode) {
+      // Reconnect automatically if app was dropped to background
+      final client = context.read<DeckClientService>();
+      client.onAppResume();
+    }
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
   }
 
   void _toggleMode() {

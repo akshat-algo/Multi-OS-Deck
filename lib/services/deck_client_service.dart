@@ -4,19 +4,25 @@ import 'package:flutter/foundation.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 import '../models/deck_action.dart';
 import '../models/deck_packet.dart';
+import 'deck_discovery_service.dart';
 
 enum ConnectionStatus {
   disconnected,
+  discovering,
   connecting,
   connected,
 }
 
-/// Manages client-side WebSocket communication to the Windows Host.
+/// Manages client-side WebSocket communication to the Windows Host,
+/// handling dynamic mDNS auto-discovery, device identification handshakes,
+/// connection timeouts, and automatic reconnection.
 class DeckClientService extends ChangeNotifier {
   WebSocketChannel? _channel;
   ConnectionStatus _status = ConnectionStatus.disconnected;
   String _hostAddress = '';
   int _port = 8443;
+  String _connectedHostName = '';
+  String? _targetHostName;
   int _latencyMs = 0;
   Timer? _pingTimer;
   Timer? _reconnectTimer;
@@ -26,24 +32,69 @@ class DeckClientService extends ChangeNotifier {
   int _ramPercent = 0;
   String? _activeApp;
 
+  final DeckDiscoveryService _discoveryService = DeckDiscoveryService();
   final _packetController = StreamController<DeckPacket>.broadcast();
 
   ConnectionStatus get status => _status;
   bool get isConnected => _status == ConnectionStatus.connected;
+  bool get isDiscovering => _status == ConnectionStatus.discovering;
+  bool get isConnecting => _status == ConnectionStatus.connecting;
   String get hostAddress => _hostAddress;
   int get port => _port;
+  String get connectedHostName => _connectedHostName;
+  String? get targetHostName => _targetHostName;
   int get latencyMs => _latencyMs;
   int get cpuPercent => _cpuPercent;
   int get ramPercent => _ramPercent;
   String? get activeApp => _activeApp;
   Stream<DeckPacket> get packetStream => _packetController.stream;
+  DeckDiscoveryService get discoveryService => _discoveryService;
 
-  /// Connects to the Windows host WebSocket.
-  Future<bool> connect(String ipOrHost, [int port = 8443]) async {
-    _hostAddress = ipOrHost.trim().replaceAll('ws://', '').replaceAll('http://', '');
-    if (_hostAddress.endsWith('.') || _hostAddress.isEmpty || _hostAddress == '192.168.1.') {
-      _hostAddress = (!kIsWeb && (Platform.isAndroid || Platform.isIOS)) ? '192.168.1.114' : '127.0.0.1';
+  void setTargetHostName(String? name) {
+    _targetHostName = (name != null && name.trim().isNotEmpty) ? name.trim() : null;
+    _discoveryService.setTargetHostName(_targetHostName);
+    notifyListeners();
+  }
+
+  /// Automatically discovers the PC via mDNS / signature _streamdeck._tcp.local
+  /// and establishes a dynamic low-latency connection without hardcoded IPs.
+  Future<bool> autoDiscoverAndConnect({
+    String? targetHostName,
+    Duration timeout = const Duration(seconds: 4),
+  }) async {
+    if (targetHostName != null) {
+      setTargetHostName(targetHostName);
     }
+
+    _setStatus(ConnectionStatus.discovering);
+
+    try {
+      final host = await _discoveryService.discover(
+        timeout: timeout,
+        preferredHostName: _targetHostName,
+      );
+
+      if (host != null) {
+        debugPrint('[Client] Discovered target PC host: ${host.hostName} at ${host.ip}:${host.port}');
+        return await connect(host.ip, host.port, _targetHostName);
+      } else {
+        debugPrint('[Client] Auto-discovery timeout. No matching host found on local Wi-Fi.');
+        // If we had a previously known address, try connecting as fallback
+        if (_hostAddress.isNotEmpty && _hostAddress != '127.0.0.1') {
+          return await connect(_hostAddress, _port, _targetHostName);
+        }
+      }
+    } catch (e) {
+      debugPrint('[Client] Discovery error: $e');
+    }
+
+    _setStatus(ConnectionStatus.disconnected);
+    return false;
+  }
+
+  /// Connects to a specific IP or Host with handshake verification and timeout protection.
+  Future<bool> connect(String ipOrHost, [int port = 8443, String? targetHostName]) async {
+    _hostAddress = ipOrHost.trim().replaceAll('ws://', '').replaceAll('http://', '');
     if (_hostAddress.contains(':')) {
       final parts = _hostAddress.split(':');
       _hostAddress = parts[0];
@@ -52,11 +103,15 @@ class DeckClientService extends ChangeNotifier {
       _port = port;
     }
 
+    if (targetHostName != null) {
+      _targetHostName = targetHostName;
+    }
+
     _autoReconnect = true;
     _reconnectTimer?.cancel();
     _reconnectTimer = null;
 
-    // Safely close previous channel to avoid conflicting listener race conditions
+    // Safely close existing channel to prevent dangling sockets
     if (_channel != null) {
       try {
         _channel?.sink.close();
@@ -70,15 +125,38 @@ class DeckClientService extends ChangeNotifier {
       final uri = Uri.parse('ws://$_hostAddress:$_port');
       _channel = WebSocketChannel.connect(uri);
 
-      // Wait for handshake response or ready with timeout
-      await _channel!.ready.timeout(const Duration(seconds: 3));
+      // Strict connection timeout (3.5 seconds) to avoid hanging
+      await _channel!.ready.timeout(const Duration(milliseconds: 3500));
 
-      _setStatus(ConnectionStatus.connected);
-      _reconnectTimer?.cancel();
-      _reconnectTimer = null;
-      _startPing();
+      final completer = Completer<bool>();
 
-      // Send initial Handshake
+      // Listen for initial handshake verification before declaring fully connected
+      _channel!.stream.listen(
+        (data) {
+          if (!completer.isCompleted) {
+            final isVerified = _verifyHandshake(data);
+            if (isVerified) {
+              _setStatus(ConnectionStatus.connected);
+              _reconnectTimer?.cancel();
+              _reconnectTimer = null;
+              _startPing();
+              completer.complete(true);
+            } else {
+              completer.complete(false);
+              disconnect();
+              return;
+            }
+          }
+          _onMessageReceived(data);
+        },
+        onDone: _onDisconnected,
+        onError: (err) {
+          if (!completer.isCompleted) completer.complete(false);
+          _onDisconnected();
+        },
+      );
+
+      // Send initial Client Handshake
       final platform = kIsWeb
           ? 'Web'
           : Platform.isAndroid
@@ -95,20 +173,57 @@ class DeckClientService extends ChangeNotifier {
         appVersion: '1.0.0',
       ));
 
-      _channel!.stream.listen(
-        _onMessageReceived,
-        onDone: _onDisconnected,
-        onError: (err) => _onDisconnected(),
+      // Wait up to 2 seconds for server Handshake ACK
+      final connected = await completer.future.timeout(
+        const Duration(seconds: 2),
+        onTimeout: () {
+          debugPrint('[Client] Handshake ACK timeout.');
+          return false;
+        },
       );
+
+      if (!connected) {
+        disconnect();
+        return false;
+      }
 
       return true;
     } catch (e) {
+      debugPrint('[Client] Connection failed to $_hostAddress:$_port ($e)');
       _onDisconnected();
       return false;
     }
   }
 
-  /// Disconnects from the current server.
+  /// Verifies server device identity and ensures it matches preferred hostname if configured.
+  bool _verifyHandshake(dynamic data) {
+    if (data is! String) return false;
+    try {
+      final packet = DeckPacket.deserialize(data);
+      if (packet.type == DeckPacketType.handshakeAck) {
+        final hostName = packet.payload['hostName'] as String? ?? 'Unknown';
+        _connectedHostName = hostName;
+
+        // Device Identification Filter
+        if (_targetHostName != null && _targetHostName!.isNotEmpty) {
+          final expected = _targetHostName!.toLowerCase().trim();
+          final received = hostName.toLowerCase().trim();
+          if (received != expected && !received.contains(expected)) {
+            debugPrint('[Client] Hostname filter mismatch: expected "$expected", got "$received". Disconnecting.');
+            return false;
+          }
+        }
+
+        debugPrint('[Client] Handshake verified with verified host: $hostName');
+        return true;
+      }
+    } catch (e) {
+      debugPrint('[Client] Error deserializing handshake ACK: $e');
+    }
+    return false;
+  }
+
+  /// Disconnects from current server.
   void disconnect() {
     _autoReconnect = false;
     _reconnectTimer?.cancel();
@@ -118,6 +233,14 @@ class DeckClientService extends ChangeNotifier {
     } catch (_) {}
     _channel = null;
     _setStatus(ConnectionStatus.disconnected);
+  }
+
+  /// Lifecycle callback: handles app resuming from background or network restoration.
+  void onAppResume() {
+    debugPrint('[Client] App resumed. Checking connection status...');
+    if (_status == ConnectionStatus.disconnected) {
+      autoDiscoverAndConnect();
+    }
   }
 
   /// Sends a button press action to the host.
@@ -145,7 +268,7 @@ class DeckClientService extends ChangeNotifier {
     try {
       _channel!.sink.add(packet.serialize());
     } catch (e) {
-      print('[Client] Error sending packet: $e');
+      debugPrint('[Client] Error sending packet: $e');
     }
   }
 
@@ -180,11 +303,12 @@ class DeckClientService extends ChangeNotifier {
     _channel = null;
     _setStatus(ConnectionStatus.disconnected);
 
-    if (_autoReconnect && _hostAddress.isNotEmpty) {
+    if (_autoReconnect) {
       _reconnectTimer?.cancel();
       _reconnectTimer = Timer(const Duration(seconds: 3), () {
         if (_status == ConnectionStatus.disconnected && _autoReconnect) {
-          connect(_hostAddress, _port);
+          debugPrint('[Client] Reconnecting dynamically...');
+          autoDiscoverAndConnect();
         }
       });
     }
@@ -207,54 +331,10 @@ class DeckClientService extends ChangeNotifier {
     }
   }
 
-  /// Automatically scans and connects to the PC over Wi-Fi with zero typing.
-  Future<bool> autoDiscoverAndConnect() async {
-    // 1. Try saved/known Wi-Fi host first
-    if (_hostAddress.isNotEmpty && _hostAddress != '127.0.0.1') {
-      if (await connect(_hostAddress, _port)) return true;
-    }
-
-    // 2. Try the primary laptop Wi-Fi IP
-    if (await connect('192.168.1.114', 8443)) return true;
-
-    // 3. UDP broadcast ping on port 8443
-    try {
-      final udp = await RawDatagramSocket.bind(InternetAddress.anyIPv4, 0);
-      udp.broadcastEnabled = true;
-      udp.send('DISCOVER_DECK'.codeUnits, InternetAddress('255.255.255.255'), 8443);
-
-      final completer = Completer<String?>();
-      final sub = udp.listen((event) {
-        if (event == RawSocketEvent.read) {
-          final dg = udp.receive();
-          if (dg != null) {
-            final reply = String.fromCharCodes(dg.data);
-            if (reply.contains('STREAM_DECK_HOST')) {
-              if (!completer.isCompleted) completer.complete(dg.address.address);
-            }
-          }
-        }
-      });
-
-      final discoveredIp = await completer.future.timeout(
-        const Duration(milliseconds: 800),
-        onTimeout: () => null,
-      );
-      sub.cancel();
-      udp.close();
-
-      if (discoveredIp != null) {
-        if (await connect(discoveredIp, 8443)) return true;
-      }
-    } catch (_) {}
-
-    // 4. Fallback to USB cable reverse proxy (127.0.0.1)
-    return await connect('127.0.0.1', 8443);
-  }
-
   @override
   void dispose() {
     disconnect();
+    _discoveryService.dispose();
     _packetController.close();
     super.dispose();
   }

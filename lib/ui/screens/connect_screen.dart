@@ -16,6 +16,7 @@ class ConnectScreen extends StatefulWidget {
 class _ConnectScreenState extends State<ConnectScreen> {
   late TextEditingController _ipController;
   late TextEditingController _portController;
+  late TextEditingController _targetHostController;
   bool _isAttempting = false;
   String? _errorMessage;
 
@@ -25,16 +26,18 @@ class _ConnectScreenState extends State<ConnectScreen> {
     final storage = context.read<DeckStorageService>();
     final lastIp = (storage.lastConnectedIp.isNotEmpty && storage.lastConnectedIp != '127.0.0.1')
         ? storage.lastConnectedIp
-        : '192.168.1.114';
+        : '';
 
     _ipController = TextEditingController(text: lastIp);
     _portController = TextEditingController(text: '8443');
+    _targetHostController = TextEditingController(text: storage.targetHostName);
   }
 
   @override
   void dispose() {
     _ipController.dispose();
     _portController.dispose();
+    _targetHostController.dispose();
     super.dispose();
   }
 
@@ -46,8 +49,18 @@ class _ConnectScreenState extends State<ConnectScreen> {
 
     final client = context.read<DeckClientService>();
     final storage = context.read<DeckStorageService>();
+    final targetName = _targetHostController.text.trim();
 
-    final success = await client.autoDiscoverAndConnect();
+    if (targetName.isNotEmpty) {
+      await storage.saveTargetHostName(targetName);
+      client.setTargetHostName(targetName);
+    }
+
+    final success = await client.autoDiscoverAndConnect(
+      targetHostName: targetName.isNotEmpty ? targetName : null,
+      timeout: const Duration(seconds: 4),
+    );
+
     if (!mounted) return;
     setState(() => _isAttempting = false);
 
@@ -56,13 +69,15 @@ class _ConnectScreenState extends State<ConnectScreen> {
         _ipController.text = client.hostAddress;
         await storage.saveLastConnectedIp(client.hostAddress);
       }
+      if (!mounted) return;
       if (Navigator.of(context).canPop()) {
         Navigator.of(context).pop();
       }
     } else {
       setState(() {
         _errorMessage =
-            'Could not auto-discover PC on local Wi-Fi.\nMake sure Companion Server is started on PC and phone is on the same Wi-Fi.';
+            'No matching Stream Deck PC receiver found on local Wi-Fi (_streamdeck._tcp.local).'
+            '\nEnsure Companion Server is active on your PC and both devices are on the same Wi-Fi.';
       });
     }
   }
@@ -145,6 +160,159 @@ class _ConnectScreenState extends State<ConnectScreen> {
             const SizedBox(height: 20),
 
             if (!client.isConnected) ...[
+              // Auto-Discover Wi-Fi Button (Signature: _streamdeck._tcp.local)
+              SizedBox(
+                height: 48,
+                child: ElevatedButton.icon(
+                  onPressed: _isAttempting ? null : _handleAutoDiscover,
+                  icon: _isAttempting
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2, color: Colors.black),
+                        )
+                      : const Icon(Icons.wifi_find_rounded),
+                  label: Text(
+                    client.isDiscovering ? 'SCANNING WI-FI (mDNS)...' : 'AUTO-DISCOVER PC (WI-FI)',
+                    style: const TextStyle(fontWeight: FontWeight.bold, letterSpacing: 0.4),
+                  ),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: DeckTheme.green,
+                    foregroundColor: Colors.black,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 16),
+
+              // Live Discovered Hosts List (if any discovered via mDNS/UDP)
+              if (client.discoveryService.discoveredHosts.isNotEmpty) ...[
+                Row(
+                  children: [
+                    const Icon(Icons.radar_rounded, size: 16, color: DeckTheme.green),
+                    const SizedBox(width: 6),
+                    Text(
+                      'Discovered Receivers (${client.discoveryService.discoveredHosts.length})',
+                      style: const TextStyle(
+                        color: DeckTheme.green,
+                        fontSize: 13,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                ...client.discoveryService.discoveredHosts.map((host) {
+                  final isTarget = _targetHostController.text.isNotEmpty &&
+                      host.hostName.toLowerCase().contains(_targetHostController.text.toLowerCase().trim());
+                  return Container(
+                    margin: const EdgeInsets.only(bottom: 8),
+                    decoration: BoxDecoration(
+                      color: DeckTheme.card,
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(
+                        color: isTarget ? DeckTheme.green : DeckTheme.border,
+                        width: isTarget ? 1.5 : 1,
+                      ),
+                    ),
+                    child: ListTile(
+                      dense: true,
+                      leading: Container(
+                        padding: const EdgeInsets.all(8),
+                        decoration: BoxDecoration(
+                          color: (isTarget ? DeckTheme.green : DeckTheme.cyan).withValues(alpha: 0.15),
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: Icon(
+                          Icons.laptop_windows_rounded,
+                          size: 18,
+                          color: isTarget ? DeckTheme.green : DeckTheme.cyan,
+                        ),
+                      ),
+                      title: Row(
+                        children: [
+                          Text(
+                            host.hostName,
+                            style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+                          ),
+                          if (isTarget) ...[
+                            const SizedBox(width: 6),
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                              decoration: BoxDecoration(
+                                color: DeckTheme.green.withValues(alpha: 0.2),
+                                borderRadius: BorderRadius.circular(4),
+                              ),
+                              child: const Text('TARGET', style: TextStyle(fontSize: 9, color: DeckTheme.green, fontWeight: FontWeight.bold)),
+                            ),
+                          ],
+                        ],
+                      ),
+                      subtitle: Text(
+                        '${host.ip}:${host.port} • ${host.serviceName}',
+                        style: const TextStyle(color: DeckTheme.textMuted, fontSize: 11),
+                      ),
+                      trailing: ElevatedButton(
+                        onPressed: _isAttempting
+                            ? null
+                            : () {
+                                _ipController.text = host.ip;
+                                _portController.text = host.port.toString();
+                                _handleConnect(host.ip);
+                              },
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: DeckTheme.cyan,
+                          foregroundColor: Colors.black,
+                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                          minimumSize: Size.zero,
+                          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        ),
+                        child: const Text('CONNECT', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
+                      ),
+                    ),
+                  );
+                }),
+                const SizedBox(height: 12),
+              ],
+
+              // Target PC Hostname Filter (Device Identification)
+              const Text(
+                'Target PC Hostname (Device Identification Filter)',
+                style: TextStyle(
+                  color: DeckTheme.textSecondary,
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              const SizedBox(height: 8),
+              TextField(
+                controller: _targetHostController,
+                style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
+                decoration: InputDecoration(
+                  hintText: 'e.g. its_akshat (only auto-connects to this machine)',
+                  prefixIcon: const Icon(Icons.fingerprint_rounded, size: 20, color: DeckTheme.cyan),
+                  filled: true,
+                  fillColor: DeckTheme.card,
+                  contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: const BorderSide(color: DeckTheme.border),
+                  ),
+                  enabledBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: const BorderSide(color: DeckTheme.border),
+                  ),
+                  focusedBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: const BorderSide(color: DeckTheme.cyan, width: 1.2),
+                  ),
+                ),
+                onChanged: (val) {
+                  storage.saveTargetHostName(val);
+                  client.setTargetHostName(val);
+                },
+              ),
+              const SizedBox(height: 16),
               // Host IP Input
               const Text(
                 'Host IP Address',
@@ -269,25 +437,6 @@ class _ConnectScreenState extends State<ConnectScreen> {
                     ],
                   ),
                 ),
-
-              // Auto-Discover Wi-Fi Button
-              SizedBox(
-                height: 48,
-                child: ElevatedButton.icon(
-                  onPressed: _isAttempting ? null : _handleAutoDiscover,
-                  icon: const Icon(Icons.wifi_find_rounded),
-                  label: const Text(
-                    'AUTO-DISCOVER PC (WI-FI)',
-                    style: TextStyle(fontWeight: FontWeight.bold, letterSpacing: 0.4),
-                  ),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: DeckTheme.green,
-                    foregroundColor: Colors.black,
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                  ),
-                ),
-              ),
-              const SizedBox(height: 12),
 
               // Connect Button
               SizedBox(
@@ -479,8 +628,15 @@ class _ConnectScreenState extends State<ConnectScreen> {
     switch (client.status) {
       case ConnectionStatus.connected:
         badgeColor = DeckTheme.green;
-        statusText = 'Connected to Windows Companion';
+        statusText = client.connectedHostName.isNotEmpty
+            ? 'Connected to ${client.connectedHostName}'
+            : 'Connected to Windows Companion';
         icon = Icons.check_circle_rounded;
+        break;
+      case ConnectionStatus.discovering:
+        badgeColor = DeckTheme.cyan;
+        statusText = 'Scanning Wi-Fi for _streamdeck._tcp.local...';
+        icon = Icons.wifi_find_rounded;
         break;
       case ConnectionStatus.connecting:
         badgeColor = DeckTheme.yellow;

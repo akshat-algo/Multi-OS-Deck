@@ -16,6 +16,8 @@ class DeckButton {
   final String? telemetryType;
   final String? telemetryValue;
 
+  final bool isRepeatable;
+
   const DeckButton({
     required this.id,
     required this.title,
@@ -27,6 +29,7 @@ class DeckButton {
     required this.action,
     this.isToggle = false,
     this.isActive = false,
+    this.isRepeatable = false,
     this.folderId,
     this.telemetryType,
     this.telemetryValue,
@@ -43,6 +46,7 @@ class DeckButton {
     DeckAction? action,
     bool? isToggle,
     bool? isActive,
+    bool? isRepeatable,
     String? folderId,
     String? telemetryType,
     String? telemetryValue,
@@ -58,6 +62,7 @@ class DeckButton {
       action: action ?? this.action,
       isToggle: isToggle ?? this.isToggle,
       isActive: isActive ?? this.isActive,
+      isRepeatable: isRepeatable ?? this.isRepeatable,
       folderId: folderId ?? this.folderId,
       telemetryType: telemetryType ?? this.telemetryType,
       telemetryValue: telemetryValue ?? this.telemetryValue,
@@ -76,6 +81,7 @@ class DeckButton {
       'action': action.toJson(),
       'isToggle': isToggle,
       'isActive': isActive,
+      'isRepeatable': isRepeatable,
       if (folderId != null) 'folderId': folderId,
       if (telemetryType != null) 'telemetryType': telemetryType,
       if (telemetryValue != null) 'telemetryValue': telemetryValue,
@@ -96,6 +102,7 @@ class DeckButton {
           : DeckAction.empty(),
       isToggle: json['isToggle'] as bool? ?? false,
       isActive: json['isActive'] as bool? ?? false,
+      isRepeatable: json['isRepeatable'] as bool? ?? false,
       folderId: json['folderId'] as String?,
       telemetryType: json['telemetryType'] as String?,
       telemetryValue: json['telemetryValue'] as String?,

@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import '../models/deck_action.dart';
 import '../models/deck_packet.dart';
@@ -60,7 +61,7 @@ class DeckServer {
       _httpServer = await HttpServer.bind(InternetAddress.anyIPv4, port);
       _log('Server Started', 'Listening on port $port');
 
-      // Start UDP auto-discovery broadcast responder
+      // Start UDP auto-discovery broadcast responder with _streamdeck._tcp.local signature
       try {
         _udpSocket = await RawDatagramSocket.bind(InternetAddress.anyIPv4, port);
         _udpSocket?.broadcastEnabled = true;
@@ -69,9 +70,18 @@ class DeckServer {
             final dg = _udpSocket?.receive();
             if (dg != null) {
               final msg = String.fromCharCodes(dg.data);
-              if (msg.contains('DISCOVER_DECK')) {
+              if (msg.contains('_streamdeck._tcp.local') || msg.contains('DISCOVER') || msg.contains('discover')) {
+                final responsePayload = jsonEncode({
+                  'service': '_streamdeck._tcp.local',
+                  'signature': '_streamdeck._tcp.local',
+                  'hostName': Platform.localHostname,
+                  'port': port,
+                  'app': 'StreamDeckHost',
+                  'os': Platform.operatingSystem,
+                  'osVersion': Platform.operatingSystemVersion,
+                });
                 _udpSocket?.send(
-                  'STREAM_DECK_HOST:$port'.codeUnits,
+                  responsePayload.codeUnits,
                   dg.address,
                   dg.port,
                 );
@@ -142,10 +152,20 @@ class DeckServer {
           ..close();
       }
     } else {
-      // Basic HTTP status check endpoint
+      // Discovery & status check endpoint matching _streamdeck._tcp.local signature
       request.response
         ..headers.contentType = ContentType.json
-        ..write('{"status":"online","app":"StreamDeckHost","port":$port,"downloadUrl":"/apk"}')
+        ..write(jsonEncode({
+          'status': 'online',
+          'app': 'StreamDeckHost',
+          'service': '_streamdeck._tcp.local',
+          'signature': '_streamdeck._tcp.local',
+          'hostName': Platform.localHostname,
+          'port': port,
+          'os': Platform.operatingSystem,
+          'osVersion': Platform.operatingSystemVersion,
+          'downloadUrl': '/apk',
+        }))
         ..close();
     }
   }
@@ -195,13 +215,17 @@ class DeckServer {
 
         if (actionMap is Map) {
           final action = DeckAction.fromJson(Map<String, dynamic>.from(actionMap));
+          print('[ACTION] Received: ${action.type.name} [command: ${action.command}, slot: $slotIndex, button: $buttonId]');
           _log('Button Pressed', 'Slot $slotIndex ($buttonId): ${action.type.name} [${action.command}]');
 
-          // Execute action on Windows
+          final sw = Stopwatch()..start();
           WindowsActionExecutor.execute(action).then((success) {
+            sw.stop();
             if (!success) {
+              print('[ACTION] Execution failed: ${action.type.name} [command: ${action.command}] (${sw.elapsedMilliseconds}ms)');
               _log('Action Failed', 'Failed to execute ${action.type.name} [${action.command}] on Windows', isError: true);
             } else {
+              print('[ACTION] Executed successfully: ${action.type.name} [command: ${action.command}] (${sw.elapsedMilliseconds}ms)');
               _log('Action Executed', 'Successfully executed ${action.type.name} [${action.command}]');
             }
           });

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import '../../models/deck_button.dart';
 import '../theme/deck_icons.dart';
@@ -32,6 +33,23 @@ class _DeckButtonWidgetState extends State<DeckButtonWidget>
   late Animation<double> _scaleAnimation;
   bool _isHovered = false;
 
+  Timer? _holdTimer;
+  Timer? _repeatTimer;
+
+  bool get _isRepeatable {
+    final b = widget.button;
+    if (b == null) return false;
+    final cmd = b.action.command.toLowerCase().trim();
+    // Only volume up and volume down are repeatable
+    return cmd == 'volume_up' ||
+        cmd == 'volup' ||
+        cmd == 'vol_up' ||
+        cmd == 'volume_down' ||
+        cmd == 'voldown' ||
+        cmd == 'vol_down' ||
+        b.isRepeatable;
+  }
+
   @override
   void initState() {
     super.initState();
@@ -47,21 +65,51 @@ class _DeckButtonWidgetState extends State<DeckButtonWidget>
 
   @override
   void dispose() {
+    _holdTimer?.cancel();
+    _repeatTimer?.cancel();
     _pressController.dispose();
     super.dispose();
   }
 
   void _onTapDown(TapDownDetails _) {
     _pressController.forward();
+
+    if (!widget.isEditMode && _isRepeatable) {
+      // 1. Instant execution on initial tap down for rapid responsiveness
+      widget.onTap?.call();
+
+      // 2. Start hold-to-repeat timers after brief initial delay
+      _holdTimer?.cancel();
+      _repeatTimer?.cancel();
+      _holdTimer = Timer(const Duration(milliseconds: 250), () {
+        _repeatTimer = Timer.periodic(const Duration(milliseconds: 90), (_) {
+          if (mounted) {
+            widget.onTap?.call();
+          }
+        });
+      });
+    }
   }
 
   void _onTapUp(TapUpDetails _) {
     _pressController.reverse();
-    widget.onTap?.call();
+    _holdTimer?.cancel();
+    _repeatTimer?.cancel();
+    // Do not call widget.onTap here; single taps are handled exclusively in _handleTap
   }
 
   void _onTapCancel() {
     _pressController.reverse();
+    _holdTimer?.cancel();
+    _repeatTimer?.cancel();
+  }
+
+  void _handleTap() {
+    // Only fire standard onTap for non-repeatable buttons (or in edit mode)
+    // Repeatable buttons are handled strictly by onTapDown and the repeat timer
+    if (widget.isEditMode || !_isRepeatable) {
+      widget.onTap?.call();
+    }
   }
 
   @override
@@ -123,6 +171,7 @@ class _DeckButtonWidgetState extends State<DeckButtonWidget>
               onTapDown: _onTapDown,
               onTapUp: _onTapUp,
               onTapCancel: _onTapCancel,
+              onTap: _handleTap,
               onLongPress: widget.isEditMode ? widget.onLongPress : null,
               behavior: HitTestBehavior.opaque,
               child: AnimatedContainer(

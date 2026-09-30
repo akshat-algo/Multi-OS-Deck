@@ -11,27 +11,28 @@ class DeckStorageService extends ChangeNotifier {
   static const String _keyActiveProfile = 'stream_deck_active_profile';
   static const String _keyRecentIps = 'stream_deck_recent_ips';
   static const String _keyLastConnectedIp = 'stream_deck_last_ip';
+  static const String _keyTargetHostName = 'stream_deck_target_hostname';
 
   List<DeckProfile> _profiles = [];
   int _activeProfileIndex = 0;
   List<String> _recentIps = [];
   String _lastConnectedIp = '';
+  String _targetHostName = '';
 
   List<DeckProfile> get profiles => List.unmodifiable(_profiles);
   DeckProfile get activeProfile =>
       _profiles.isNotEmpty ? _profiles[_activeProfileIndex] : _createDefaultControlsProfile();
   List<String> get recentIps => List.unmodifiable(_recentIps);
   String get lastConnectedIp => _lastConnectedIp;
+  String get targetHostName => _targetHostName;
 
   Future<void> init() async {
     final prefs = await SharedPreferences.getInstance();
 
-    // Load recent IPs
+    // Load recent IPs & Target HostName
     _recentIps = prefs.getStringList(_keyRecentIps) ?? [];
-    _lastConnectedIp = prefs.getString(_keyLastConnectedIp) ?? '127.0.0.1';
-    if (_lastConnectedIp.endsWith('.') || _lastConnectedIp.isEmpty || _lastConnectedIp == '192.168.1.') {
-      _lastConnectedIp = '127.0.0.1';
-    }
+    _lastConnectedIp = prefs.getString(_keyLastConnectedIp) ?? '';
+    _targetHostName = prefs.getString(_keyTargetHostName) ?? '';
 
     // Load Profiles
     final rawProfiles = prefs.getString(_keyProfiles);
@@ -86,6 +87,13 @@ class DeckStorageService extends ChangeNotifier {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_keyLastConnectedIp, ip);
     await prefs.setStringList(_keyRecentIps, _recentIps);
+    notifyListeners();
+  }
+
+  Future<void> saveTargetHostName(String name) async {
+    _targetHostName = name.trim();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_keyTargetHostName, _targetHostName);
     notifyListeners();
   }
 
@@ -257,6 +265,7 @@ class DeckStorageService extends ChangeNotifier {
         activeColorHex: '#00F0FF',
         glowColorHex: '#00F0FF',
         action: DeckAction(type: DeckActionType.media, command: 'volume_up'),
+        isRepeatable: true,
       ),
       6: const DeckButton(
         id: 'btn_voldown',
@@ -267,6 +276,7 @@ class DeckStorageService extends ChangeNotifier {
         activeColorHex: '#00F0FF',
         glowColorHex: '#00F0FF',
         action: DeckAction(type: DeckActionType.media, command: 'volume_down'),
+        isRepeatable: true,
       ),
       7: const DeckButton(
         id: 'btn_mute',
@@ -493,6 +503,7 @@ class DeckStorageService extends ChangeNotifier {
         activeColorHex: '#00F0FF',
         glowColorHex: '#00F0FF',
         action: DeckAction(type: DeckActionType.media, command: 'volume_up'),
+        isRepeatable: true,
       ),
       12: const DeckButton(
         id: 'btn_voldown',
@@ -503,6 +514,7 @@ class DeckStorageService extends ChangeNotifier {
         activeColorHex: '#00F0FF',
         glowColorHex: '#00F0FF',
         action: DeckAction(type: DeckActionType.media, command: 'volume_down'),
+        isRepeatable: true,
       ),
       13: const DeckButton(
         id: 'btn_mute',
